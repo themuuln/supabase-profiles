@@ -16,6 +16,7 @@ Commands:
   supa current                                     show the active default profile
   supa run <profile> <cmd...>                      run `supabase <cmd...>` with that profile's token
   supa token <profile>                             print a profile's token (for CI/export)
+  supa pass-export <profile> [path]                write a profile token into the pass store + git push
   supa rm <profile>                                delete a profile
   supa <cmd...>                                    shorthand: run `supabase <cmd...>` with the active profile
 
@@ -43,7 +44,7 @@ from datetime import datetime, timezone
 try:
     from . import __version__
 except ImportError:  # running as a standalone script, not as a package
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
 STORE_DIR = os.environ.get("SUPA_CONFIG_DIR") or os.path.expanduser("~/.config/supa")
 STORE_PATH = os.path.join(STORE_DIR, "profiles.json")
@@ -198,6 +199,54 @@ def open_browser(url: str) -> None:
             pass
 
 
+# ---------- pass integration ----------
+
+def pass_default_path(profile: str) -> str:
+    return f"supa/profiles/{profile}"
+
+
+def run_pass(args, input=None, timeout=30):
+    """Run a `pass` subcommand with piped stdin (hermetic against interactive prompts)."""
+    pass_bin = shutil.which("pass")
+    if not pass_bin:
+        raise SupaError("pass CLI not found on PATH (install with `brew install pass`)")
+    try:
+        return subprocess.run(
+            [pass_bin, *args], input=input, capture_output=True, text=True, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        raise SupaError(f"pass {' '.join(args)} timed out")
+
+
+def pass_read_token(profile: str, path=None) -> str:
+    """Read a profile token from the pass store (default path supa/profiles/<profile>)."""
+    path = path or pass_default_path(profile)
+    result = run_pass(["show", path])
+    if result.returncode != 0:
+        raise SupaError(
+            f"cannot read pass entry '{path}' (exit {result.returncode}) - "
+            "is it exported? do you have the GPG key?"
+        )
+    token = result.stdout.strip()
+    if not TOKEN_RE.match(token):
+        raise SupaError(f"pass entry '{path}' does not contain a valid sbp_ token")
+    return token
+
+
+def pass_export_token(profile: str, token: str, path=None) -> str:
+    """Write a profile token into the pass store and push it to the remote."""
+    path = path or pass_default_path(profile)
+    result = run_pass(["insert", "-m", "-f", path], input=token + "\n")
+    if result.returncode != 0:
+        raise SupaError(
+            f"pass insert failed for '{path}' (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    result = run_pass(["git", "push"])
+    if result.returncode != 0:
+        print(f"note: `pass git push` failed - sync manually (exit {result.returncode})", file=sys.stderr)
+    return path
+
+
 # ---------- commands ----------
 
 def cmd_login(args, store: dict) -> int:
@@ -207,6 +256,8 @@ def cmd_login(args, store: dict) -> int:
     token = args.token
     if not token and args.from_file:
         token = read_current_cli_token()
+    if not token and getattr(args, "from_pass", None) is not None:
+        token = pass_read_token(name, args.from_pass or None)
     if not token:
         token = os.environ.get("SUPABASE_ACCESS_TOKEN", "").strip()
     if not token and sys.stdin.isatty():
@@ -342,12 +393,21 @@ def cmd_rm(args, store: dict) -> int:
     return 0
 
 
+def cmd_pass_export(args, store: dict) -> int:
+    prof = store["profiles"].get(args.profile)
+    if not prof:
+        raise SupaError(f"unknown profile '{args.profile}'")
+    path = pass_export_token(args.profile, prof["token"], args.path)
+    print(f"profile '{args.profile}' exported to pass: {path}")
+    return 0
+
+
 # ---------- main ----------
 
 def main() -> int:
     argv = [a for a in sys.argv[1:] if a != "--"]
     first = argv[0] if argv else None
-    known = {"login", "ls", "use", "current", "run", "token", "rm"}
+    known = {"login", "ls", "use", "current", "run", "token", "rm", "pass-export"}
 
     store = load_store()
     imported = import_from_zsh_file(store)
@@ -375,6 +435,8 @@ def main() -> int:
     p_login.add_argument("profile")
     p_login.add_argument("--token", help="token (sbp_...); else paste at the prompt")
     p_login.add_argument("--from-file", action="store_true", help="capture the token the supabase CLI currently uses (keychain -> file)")
+    p_login.add_argument("--from-pass", nargs="?", const="", metavar="PATH",
+                         help="read the token from a pass entry (default supa/profiles/<profile>)")
 
     p_ls = sub.add_parser("ls", help="list profiles")
     p_ls.add_argument("--json", action="store_true")
@@ -394,6 +456,10 @@ def main() -> int:
 
     p_rm = sub.add_parser("rm", help="delete a profile")
     p_rm.add_argument("profile")
+
+    p_export = sub.add_parser("pass-export", help="write a profile token into the pass store and push it")
+    p_export.add_argument("profile")
+    p_export.add_argument("path", nargs="?", help="pass entry path (default supa/profiles/<profile>)")
 
     args, rest = parser.parse_known_args()
     if rest:
@@ -420,6 +486,8 @@ def main() -> int:
             return cmd_token(args, store)
         if args.command == "rm":
             return cmd_rm(args, store)
+        if args.command == "pass-export":
+            return cmd_pass_export(args, store)
         parser.error(f"unknown command: {args.command}")
     except SupaError as err:
         print(f"supa: error: {err}", file=sys.stderr)

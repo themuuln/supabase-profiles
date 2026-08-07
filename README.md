@@ -74,6 +74,25 @@ alias s-tolom='SUPABASE_ACCESS_TOKEN="$__sb_tolom" supabase'
 | `SUPA_ACCESS_TOKEN_FILE` | `~/.supabase/access-token` | file written by `supa use` |
 | `SUPA_API_BASE` | `https://api.supabase.com/v1` | Management API base (staging/self-hosted) |
 
+### Cross-device sync with pass
+
+`supa` integrates with [pass](https://www.passwordstore.org/) (the standard Unix
+password manager, git-synced) for sharing tokens across machines:
+
+```bash
+supa pass-export zerone               # write token to pass: supa/profiles/zerone + `pass git push`
+supa login tolom --from-pass          # read token from pass: supa/profiles/tolom
+supa login tolom --from-pass work/supa-tolom   # custom pass path
+```
+
+- Export writes the token with `pass insert -m` (GPG-encrypted), then runs
+  `pass git push` — a push failure is reported but not fatal (e.g. no remote).
+- Import reads with `pass show`; entries are validated as `sbp_` tokens.
+- Sync between devices is pass's own git remote — on the other machine just
+  `pass git pull` (or `pass pull`), then `supa login <profile> --from-pass`.
+- This works in headless contexts as long as `pass` can decrypt (GPG key
+  present on that machine) — the store itself is plain files, no keychain.
+
 ## Security
 
 - Tokens are stored **plaintext in `profiles.json`, mode 600** — the same

@@ -295,6 +295,127 @@ def test_run_passthrough_without_active(env):
         cli.cmd_run(args(cmd=["projects", "list"]), store, passthrough=True)
 
 
+# ---------- pass integration ----------
+
+class FakePassResult:
+    def __init__(self, rc, stdout="", stderr=""):
+        self.returncode = rc
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_login_from_pass(env, monkeypatch):
+    calls = []
+
+    def fake_run_pass(args, input=None, timeout=30):
+        calls.append((args, input))
+        if args[0] == "show":
+            return FakePassResult(0, stdout=make_token("f") + "\n")
+        raise AssertionError(f"unexpected pass call: {args}")
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = cli.load_store()
+    rc = cli.cmd_login(args(profile="alpha", token=None, from_file=False, from_pass=""), store)
+    assert rc == 0
+    assert store["profiles"]["alpha"]["token"] == make_token("f")
+    assert calls[0][0] == ["show", "supa/profiles/alpha"]
+
+
+def test_login_from_pass_custom_path(env, monkeypatch):
+    def fake_run_pass(args, input=None, timeout=30):
+        return FakePassResult(0, stdout=make_token("f") + "\n")
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = cli.load_store()
+    cli.cmd_login(args(profile="alpha", token=None, from_file=False, from_pass="custom/path"), store)
+    assert store["profiles"]["alpha"]["token"] == make_token("f")
+
+
+def test_login_from_pass_missing_entry(env, monkeypatch):
+    def fake_run_pass(args, input=None, timeout=30):
+        return FakePassResult(1, stderr="Error: supa/profiles/alpha is not in the password store.")
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = cli.load_store()
+    with pytest.raises(cli.SupaError):
+        cli.cmd_login(args(profile="alpha", token=None, from_file=False, from_pass=""), store)
+    assert "alpha" not in store["profiles"]
+
+
+def test_login_from_pass_invalid_content(env, monkeypatch):
+    def fake_run_pass(args, input=None, timeout=30):
+        return FakePassResult(0, stdout="not-a-token\n")
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = cli.load_store()
+    with pytest.raises(cli.SupaError):
+        cli.cmd_login(args(profile="alpha", token=None, from_file=False, from_pass=""), store)
+
+
+def test_pass_export_writes_and_pushes(env, monkeypatch):
+    calls = []
+
+    def fake_run_pass(args, input=None, timeout=30):
+        calls.append((args, input))
+        return FakePassResult(0)
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = {"active": None, "profiles": {"alpha": {"token": make_token("e")}}}
+    rc = cli.cmd_pass_export(args(profile="alpha", path=None), store)
+    assert rc == 0
+    assert calls[0][0] == ["insert", "-m", "-f", "supa/profiles/alpha"]
+    assert calls[0][1] == make_token("e") + "\n"
+    assert calls[1][0] == ["git", "push"]
+
+
+def test_pass_export_custom_path(env, monkeypatch):
+    calls = []
+
+    def fake_run_pass(args, input=None, timeout=30):
+        calls.append(args)
+        return FakePassResult(0)
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = {"active": None, "profiles": {"alpha": {"token": make_token("e")}}}
+    cli.cmd_pass_export(args(profile="alpha", path="work/supa-alpha"), store)
+    assert calls[0] == ["insert", "-m", "-f", "work/supa-alpha"]
+
+
+def test_pass_export_push_failure_is_tolerated(env, monkeypatch, capsys):
+    def fake_run_pass(args, input=None, timeout=30):
+        if args[0] == "git":
+            return FakePassResult(1, stderr="not a git repo")
+        return FakePassResult(0)
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = {"active": None, "profiles": {"alpha": {"token": make_token("e")}}}
+    rc = cli.cmd_pass_export(args(profile="alpha", path=None), store)
+    assert rc == 0
+    assert "sync manually" in capsys.readouterr().err
+
+
+def test_pass_export_unknown_profile(env, monkeypatch):
+    store = {"active": None, "profiles": {}}
+    with pytest.raises(cli.SupaError):
+        cli.cmd_pass_export(args(profile="nope", path=None), store)
+
+
+def test_pass_export_insert_failure(env, monkeypatch):
+    def fake_run_pass(args, input=None, timeout=30):
+        return FakePassResult(1, stderr="gpg failed")
+
+    monkeypatch.setattr(cli, "run_pass", fake_run_pass)
+    store = {"active": None, "profiles": {"alpha": {"token": make_token("e")}}}
+    with pytest.raises(cli.SupaError):
+        cli.cmd_pass_export(args(profile="alpha", path=None), store)
+
+
+def test_run_pass_missing_binary(env, monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    with pytest.raises(cli.SupaError):
+        cli.run_pass(["show", "x"])
+
+
 # ---------- zsh import ----------
 
 def test_import_from_zsh_file(env):

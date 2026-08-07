@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supabase-profiles"
-version = "1.0.0"
+version = "1.1.0"
 description = "Multi-profile Supabase CLI wrapper - per-account tokens without the keychain"
 readme = "README.md"
 license = { text = "MIT" }
