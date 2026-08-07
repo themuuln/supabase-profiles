@@ -40,7 +40,10 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-from . import __version__
+try:
+    from . import __version__
+except ImportError:  # running as a standalone script, not as a package
+    __version__ = "1.0.0"
 
 STORE_DIR = os.environ.get("SUPA_CONFIG_DIR") or os.path.expanduser("~/.config/supa")
 STORE_PATH = os.path.join(STORE_DIR, "profiles.json")
