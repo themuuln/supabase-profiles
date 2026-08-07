@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """supa - multi-profile Supabase CLI wrapper.
 
 Each profile is a named Supabase account (an ``sbp_`` access token).
